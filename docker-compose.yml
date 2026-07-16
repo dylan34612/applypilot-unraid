@@ -1,0 +1,49 @@
+services:
+  applypilot:
+    image: ghcr.io/dylan34612/applypilot-unraid:latest
+    container_name: applypilot
+    environment:
+      # Stages 1-5 (discover/enrich/score/tailor/cover letters) — your
+      # OpenAI-compatible endpoint, used natively by ApplyPilot
+      - LLM_URL=${LLM_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+      - LLM_MODEL=${LLM_MODEL}
+      # Stage 6 (auto-apply) — where the Claude Code CLI sends its requests.
+      # Default routes to the LiteLLM bridge below, i.e. your own endpoint.
+      - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://litellm:4000}
+      - ANTHROPIC_AUTH_TOKEN=${ANTHROPIC_AUTH_TOKEN:-bridge}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # Disable Claude Code telemetry/update checks inside the container
+      - DISABLE_AUTOUPDATER=1
+      - DISABLE_TELEMETRY=1
+    volumes:
+      # ApplyPilot state: profile, resume, db, tailored resumes, logs
+      - /mnt/user/appdata/applypilot/config:/config
+      # Claude Code config + npm/npx cache survive container recreation
+      - /mnt/user/appdata/applypilot/home:/home/pilot
+    # Chromium needs more shared memory than Docker's 64MB default
+    shm_size: "2gb"
+    restart: unless-stopped
+    depends_on:
+      - litellm
+
+  # Translates Claude Code's Anthropic Messages API calls into requests
+  # against your OpenAI-compatible endpoint. Single-model CLI mode: every
+  # request is forwarded to BRIDGE_UPSTREAM_MODEL regardless of the model
+  # name Claude Code asks for, so no config file is needed. Not exposed
+  # outside the compose network. Remove this service (and set
+  # ANTHROPIC_API_KEY instead) to use the real Anthropic API for auto-apply.
+  litellm:
+    image: ghcr.io/berriai/litellm:main-latest
+    container_name: applypilot-litellm
+    command:
+      - "--model"
+      - "openai/${BRIDGE_UPSTREAM_MODEL}"
+      - "--api_base"
+      - "${BRIDGE_UPSTREAM_BASE}"
+      - "--api_key"
+      - "${BRIDGE_UPSTREAM_KEY}"
+      - "--port"
+      - "4000"
+      - "--drop_params"
+    restart: unless-stopped
