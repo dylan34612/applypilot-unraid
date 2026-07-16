@@ -19,6 +19,15 @@ RUN pip install --no-cache-dir applypilot \
     && pip install --no-cache-dir --no-deps python-jobspy \
     && pip install --no-cache-dir pydantic tls-client requests markdownify regex
 
+# WebUI (control panel served on port 8484)
+RUN pip install --no-cache-dir fastapi uvicorn python-multipart
+COPY webui /opt/webui
+# Editor seed templates from upstream ApplyPilot
+RUN curl -fsSL -o /opt/webui/profile.example.json \
+        https://raw.githubusercontent.com/Pickle-Pixel/ApplyPilot/main/profile.example.json \
+    && curl -fsSL -o /opt/webui/searches.example.yaml \
+        https://raw.githubusercontent.com/Pickle-Pixel/ApplyPilot/main/src/applypilot/config/searches.example.yaml
+
 # ApplyPilot launches Chrome without --no-sandbox, which fails inside a
 # container; CHROME_PATH points at this wrapper instead of the raw binary
 RUN printf '#!/bin/sh\nexec /usr/bin/chromium --no-sandbox --disable-dev-shm-usage "$@"\n' \
@@ -40,6 +49,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 USER pilot
 WORKDIR /home/pilot
 VOLUME /config
+EXPOSE 8484
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["idle"]
+CMD ["webui"]

@@ -44,6 +44,9 @@ before going live.
 
 4. **Compose Up.** The image is pulled from GHCR — nothing is built on the server.
 
+5. **Open the WebUI** at `http://your-server:8484` (the container also gets a WebUI
+   button in Unraid's Docker tab). Everything happens there — no console needed.
+
 Alternatively, from any terminal on the server:
 
 ```bash
@@ -54,31 +57,27 @@ nano .env          # fill in your endpoint details
 docker compose up -d
 ```
 
-## First-time init and usage
+## The WebUI
 
-The setup wizard is interactive, so run it in a console (Unraid UI → applypilot
-container → Console, or any terminal):
+The container's main process is a small FastAPI control panel (port 8484) that shells
+out to the `applypilot` CLI, so behavior is identical to running commands by hand:
 
-```bash
-docker exec -it applypilot applypilot init      # profile, resume, searches
-docker exec -it applypilot applypilot doctor    # verify everything is wired up
-```
+- **Setup** — edit `profile.json`, `searches.yaml`, and `resume.txt` in the browser
+  (pre-seeded from ApplyPilot's example templates), plus optional `resume.pdf` upload.
+  This replaces the interactive `applypilot init` wizard.
+- **Pipeline** — buttons for Run (discover → enrich → score → tailor → cover → pdf),
+  Doctor, Auto-apply dry-run, and Auto-apply live (with a confirmation prompt, since
+  live mode submits real applications). One task runs at a time; Stop terminates it.
+- **Console** — live streaming output of the running task.
+- **Stats + results dashboard** — pipeline counters up top, and ApplyPilot's own HTML
+  results dashboard (score charts, filterable job cards) regenerated on demand at
+  `/dashboard`.
 
-`init` asks for a Gemini key — skip it; your endpoint is already configured via the
-`LLM_URL` environment variable, which takes precedence. State lives in
-`/mnt/user/appdata/applypilot/config` on the host.
+**No authentication** — keep it LAN-only. It can submit job applications under your
+name; don't reverse-proxy it to the internet without adding auth.
 
-```bash
-# Discover, enrich, score, tailor, write cover letters
-docker exec -it applypilot applypilot run all
-
-# Auto-apply (headless Chrome), dry-run first
-docker exec -it applypilot applypilot apply --headless --dry-run
-docker exec -it applypilot applypilot apply --headless
-
-# Pipeline status
-docker exec -it applypilot applypilot status
-```
+The CLI still works too (`docker exec -it applypilot applypilot ...`), and setting the
+stack's command to `idle` disables the WebUI entirely.
 
 **Scheduling (optional):** Unraid's *User Scripts* plugin with a cron schedule:
 

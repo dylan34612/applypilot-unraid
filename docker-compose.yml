@@ -16,6 +16,9 @@ services:
       # Disable Claude Code telemetry/update checks inside the container
       - DISABLE_AUTOUPDATER=1
       - DISABLE_TELEMETRY=1
+    ports:
+      # WebUI control panel
+      - "${WEBUI_PORT:-8484}:8484"
     volumes:
       # ApplyPilot state: profile, resume, db, tailored resumes, logs
       - /mnt/user/appdata/applypilot/config:/config
@@ -24,6 +27,9 @@ services:
     # Chromium needs more shared memory than Docker's 64MB default
     shm_size: "2gb"
     restart: unless-stopped
+    labels:
+      # Unraid Docker UI integration (WebUI button on the container)
+      net.unraid.docker.webui: "http://[IP]:[PORT:8484]/"
     depends_on:
       - litellm
 
