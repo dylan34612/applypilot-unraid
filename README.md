@@ -86,6 +86,13 @@ stack's command to `idle` disables the WebUI entirely.
 docker exec applypilot applypilot run all
 ```
 
+## Testing branch builds
+
+Every branch push builds an image tagged with the branch name (only `main` publishes
+`:latest`). To test a PR's image on the server before merging, set `IMAGE_TAG` in your
+`.env` to the branch name (e.g. `IMAGE_TAG=upstream-prep`), Compose Down/Up, and set it
+back to `latest` when done.
+
 ## Updating
 
 The image rebuilds weekly (and on every push) via GitHub Actions, picking up new

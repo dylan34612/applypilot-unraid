@@ -1,6 +1,7 @@
 services:
   applypilot:
-    image: ghcr.io/dylan34612/applypilot-unraid:latest
+    # Set IMAGE_TAG in .env to test a branch build (e.g. upstream-prep)
+    image: ghcr.io/dylan34612/applypilot-unraid:${IMAGE_TAG:-latest}
     container_name: applypilot
     environment:
       # Stages 1-5 (discover/enrich/score/tailor/cover letters) — your
