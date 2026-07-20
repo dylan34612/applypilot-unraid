@@ -31,10 +31,15 @@ from applypilot.config import (
     ensure_dirs,
     load_env,
 )
-from applypilot.database import init_db, get_stats
+from applypilot.database import init_db, get_stats, get_connection
 
 WEBUI_DIR = Path(__file__).parent
 MAX_PDF_BYTES = 20 * 1024 * 1024
+# Statuses a human can resolve by hand in the live browser
+MANUAL_STATUSES = ("captcha", "login_issue", "manual")
+# Persistent Chrome profile for manual solving — logins carry across the batch
+MANUAL_PROFILE_DIR = APP_DIR / "manual-chrome"
+NOVNC_DISPLAY = os.environ.get("DISPLAY", ":99")
 
 load_env()
 ensure_dirs()
@@ -143,6 +148,7 @@ def state() -> JSONResponse:
         },
         "llm_configured": any(os.environ.get(k) for k in
                               ("LLM_URL", "GEMINI_API_KEY", "OPENAI_API_KEY")),
+        "novnc_port": int(os.environ.get("NOVNC_PORT", "8485")),
     })
 
 
@@ -165,6 +171,7 @@ class TaskRequest(BaseModel):
     workers: int = 1
     min_score: int | None = None
     dry_run: bool = False
+    watch: bool = False  # run headed on the virtual display (viewable via noVNC)
 
 
 @app.post("/api/task")
@@ -181,14 +188,17 @@ def start_task(req: TaskRequest) -> JSONResponse:
         task = f"run {' '.join(stages)}"
 
     elif req.action == "apply":
-        args = ["applypilot", "apply", "--headless"]
+        args = ["applypilot", "apply"]
+        # Headed (no --headless) renders on the virtual display for noVNC
+        if not req.watch:
+            args.append("--headless")
         if req.dry_run:
             args.append("--dry-run")
         if workers > 1:
             args += ["--workers", str(workers)]
         if req.min_score is not None:
             args += ["--min-score", str(max(1, min(req.min_score, 10)))]
-        task = "apply (dry-run)" if req.dry_run else "apply"
+        task = "apply" + (" watch" if req.watch else "") + (" (dry-run)" if req.dry_run else "")
 
     elif req.action == "doctor":
         args = ["applypilot", "doctor"]
@@ -204,6 +214,82 @@ def start_task(req: TaskRequest) -> JSONResponse:
 @app.post("/api/stop")
 def stop_task() -> JSONResponse:
     return JSONResponse({"stopped": runner.stop()})
+
+
+# ---------------------------------------------------------------------------
+# CAPTCHA / manual-review queue
+#
+# Jobs the agent couldn't finish (CAPTCHA, forced login, manual ATS) are left
+# in the DB with these statuses and their materials already generated. This
+# queue lets you grind them by hand in a live browser, then mark them applied.
+# ---------------------------------------------------------------------------
+
+@app.get("/api/manual-queue")
+def manual_queue() -> JSONResponse:
+    conn = get_connection()
+    try:
+        placeholders = ",".join("?" for _ in MANUAL_STATUSES)
+        rows = conn.execute(
+            f"""SELECT url, title, site, application_url, apply_status,
+                       apply_error, fit_score, tailored_resume_path, cover_letter_path
+                FROM jobs WHERE apply_status IN ({placeholders})
+                ORDER BY fit_score DESC""",
+            MANUAL_STATUSES,
+        ).fetchall()
+    finally:
+        conn.close()
+
+    jobs = []
+    for r in rows:
+        d = dict(r) if hasattr(r, "keys") else {
+            "url": r[0], "title": r[1], "site": r[2], "application_url": r[3],
+            "apply_status": r[4], "apply_error": r[5], "fit_score": r[6],
+            "tailored_resume_path": r[7], "cover_letter_path": r[8],
+        }
+        jobs.append(d)
+    return JSONResponse({"jobs": jobs, "display": NOVNC_DISPLAY})
+
+
+class MarkRequest(BaseModel):
+    url: str
+    status: str = "applied"  # 'applied' or 'failed'
+
+
+@app.post("/api/mark")
+def mark(req: MarkRequest) -> JSONResponse:
+    if req.status not in ("applied", "failed"):
+        raise HTTPException(400, "status must be 'applied' or 'failed'")
+    from applypilot.apply.launcher import mark_job
+    mark_job(req.url, req.status, "manually resolved via WebUI")
+    return JSONResponse({"marked": req.url, "status": req.status})
+
+
+class ManualBrowserRequest(BaseModel):
+    urls: list[str]
+
+
+@app.post("/api/manual-browser")
+def manual_browser(req: ManualBrowserRequest) -> JSONResponse:
+    """Open the given URLs as tabs in a persistent, human-driven Chrome on the
+    virtual display (viewable via noVNC). Reuses one profile so a login done
+    for the first job carries to the rest of the batch."""
+    urls = [u for u in req.urls if u.startswith(("http://", "https://"))][:25]
+    if not urls:
+        raise HTTPException(400, "No valid http(s) URLs")
+
+    chrome = os.environ.get("CHROME_PATH", "chromium")
+    MANUAL_PROFILE_DIR.mkdir(parents=True, exist_ok=True)
+    env = os.environ.copy()
+    env["DISPLAY"] = NOVNC_DISPLAY
+    cmd = [chrome, f"--user-data-dir={MANUAL_PROFILE_DIR}",
+           "--no-first-run", "--no-default-browser-check",
+           "--start-maximized", *urls]
+    try:
+        subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except FileNotFoundError:
+        raise HTTPException(500, f"Browser not found: {chrome}")
+    return JSONResponse({"opened": len(urls), "display": NOVNC_DISPLAY})
 
 
 # ---------------------------------------------------------------------------

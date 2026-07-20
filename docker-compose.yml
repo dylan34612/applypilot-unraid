@@ -27,6 +27,8 @@ services:
     ports:
       # WebUI control panel
       - "${WEBUI_PORT:-8484}:8484"
+      # noVNC — live view of headed Chrome (watch agent, solve CAPTCHAs)
+      - "${NOVNC_PORT:-8485}:8485"
     volumes:
       # ApplyPilot state: profile, resume, db, tailored resumes, logs
       - /mnt/user/appdata/applypilot/config:/config

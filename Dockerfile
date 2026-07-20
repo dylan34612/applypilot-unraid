@@ -7,6 +7,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium lsof procps curl ca-certificates gnupg git \
         fonts-liberation fonts-noto-color-emoji \
+        # Virtual display + noVNC so headed Chrome is viewable in a browser
+        # (watch the agent live, solve CAPTCHAs by hand)
+        xvfb x11vnc fluxbox novnc websockify \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -51,10 +54,14 @@ ENV APPLYPILOT_DIR=/config \
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+ENV DISPLAY=:99 \
+    VNC_RESOLUTION=1280x900x24 \
+    NOVNC_PORT=8485
+
 USER pilot
 WORKDIR /home/pilot
 VOLUME /config
-EXPOSE 8484
+EXPOSE 8484 8485
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["webui"]
