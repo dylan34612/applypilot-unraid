@@ -8,6 +8,10 @@ services:
       - LLM_URL=${LLM_URL}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL}
+      # Alternative stage 1-5 providers (optional; LLM_URL takes precedence
+      # over both when set)
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       # Stage 6 (auto-apply) — where the Claude Code CLI sends its requests.
       # Default routes to the LiteLLM bridge below, i.e. your own endpoint.
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://litellm:4000}
