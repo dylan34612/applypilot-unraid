@@ -111,13 +111,13 @@ Everything ApplyPilot reads, and where it's set:
 | `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` | Points the Claude Code CLI at the LiteLLM bridge | `.env` |
 | `ANTHROPIC_API_KEY` | Real Anthropic API for auto-apply (instead of the bridge) | `.env` |
 | `BRIDGE_UPSTREAM_BASE` / `BRIDGE_UPSTREAM_KEY` / `BRIDGE_UPSTREAM_MODEL` | Where the LiteLLM bridge forwards to | `.env` |
+| `PROXY` | Scraping proxy (`host:port:user:pass`); passed through for parity, though the current ApplyPilot release never reads it | `.env` |
 | `WEBUI_PORT` | Host port for the control panel (default 8484) | `.env` |
 | `APPLYPILOT_DIR` | State directory (`/config`) | baked into image |
 | `CHROME_PATH` | Container-safe Chromium wrapper | baked into image |
 
-Upstream's `.env.example` also mentions `PROXY`, but nothing in the current ApplyPilot
-code reads it — it's vestigial. `CAPSOLVER_API_KEY` (CAPTCHA solving) is deliberately
-not wired up; CAPTCHA-blocked applications are marked and skipped for you to finish
+`CAPSOLVER_API_KEY` (CAPTCHA solving) is the one upstream variable deliberately not
+wired up here; CAPTCHA-blocked applications are marked and skipped for you to finish
 manually.
 
 Escape hatch: ApplyPilot also loads `/config/.env` inside the container via dotenv

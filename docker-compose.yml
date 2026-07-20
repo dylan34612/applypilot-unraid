@@ -12,6 +12,9 @@ services:
       # over both when set)
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      # Scraping proxy, host:port:user:pass (upstream documents it but the
+      # current release never reads it; passed through for forward-parity)
+      - PROXY=${PROXY:-}
       # Stage 6 (auto-apply) — where the Claude Code CLI sends its requests.
       # Default routes to the LiteLLM bridge below, i.e. your own endpoint.
       - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-http://litellm:4000}
