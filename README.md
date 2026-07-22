@@ -40,7 +40,10 @@ before going live.
 
 3. **Set the env** — in the stack's env file editor, paste the contents of
    [.env.example](.env.example) and fill in your endpoint URL, API key, and model name
-   (the `BRIDGE_*` values are usually the same endpoint as `LLM_*`).
+   (the `BRIDGE_*` values are usually the same endpoint as `LLM_*`). Set `STACK_DIR` to
+   the host path of the folder holding your compose file + `.env` if you want the
+   in-WebUI update button (for the Compose Manager plugin that's
+   `/boot/config/plugins/compose.manager/projects/<name>`).
 
 4. **Compose Up.** The image is pulled from GHCR — nothing is built on the server.
 
@@ -72,9 +75,25 @@ out to the `applypilot` CLI, so behavior is identical to running commands by han
 - **Stats + results dashboard** — pipeline counters up top, and ApplyPilot's own HTML
   results dashboard (score charts, filterable job cards) regenerated on demand at
   `/dashboard`.
+- **Live browser (noVNC)** — Chrome runs on a virtual display inside the container,
+  viewable in a browser tab at `http://your-server:8485/vnc.html`. Tick **watch live**
+  before an auto-apply run to follow the agent in real time, or use it to solve CAPTCHAs
+  by hand (see below).
+- **Manual review queue** — jobs the agent couldn't finish on its own (CAPTCHA, forced
+  login, manual-only sites) collect here with their tailored resume and cover letter
+  already generated. **Open all in live browser** loads them as tabs in a persistent
+  Chrome (log into a board once and the rest of the batch stays logged in); finish each
+  by hand, then mark it Applied.
+- **Image & updates** — pick an image tag and recreate the stack without touching a
+  terminal or the Compose Manager. Requires the Docker socket mount and `STACK_DIR`
+  (both in the default compose); the panel hides itself if the socket isn't present.
+  See the security note below.
 
 **No authentication** — keep it LAN-only. It can submit job applications under your
-name; don't reverse-proxy it to the internet without adding auth.
+name, and (with the Docker socket mounted for the update panel) it has root-equivalent
+control of the Unraid host. Do not reverse-proxy it to the internet without adding auth.
+To drop the update panel and its attack surface, remove the two Docker-related volume
+mounts from the compose file; everything else keeps working.
 
 The CLI still works too (`docker exec -it applypilot applypilot ...`), and setting the
 stack's command to `idle` disables the WebUI entirely.
@@ -85,6 +104,13 @@ stack's command to `idle` disables the WebUI entirely.
 #!/bin/bash
 docker exec applypilot applypilot run all
 ```
+
+## Testing branch builds
+
+Every branch push builds an image tagged with the branch name (only `main` publishes
+`:latest`). To test a PR's image on the server before merging, set `IMAGE_TAG` in your
+`.env` to the branch name (e.g. `IMAGE_TAG=upstream-prep`), Compose Down/Up, and set it
+back to `latest` when done.
 
 ## Updating
 
@@ -116,9 +142,22 @@ Everything ApplyPilot reads, and where it's set:
 | `APPLYPILOT_DIR` | State directory (`/config`) | baked into image |
 | `CHROME_PATH` | Container-safe Chromium wrapper | baked into image |
 
-`CAPSOLVER_API_KEY` (CAPTCHA solving) is the one upstream variable deliberately not
-wired up here; CAPTCHA-blocked applications are marked and skipped for you to finish
-manually.
+`CAPSOLVER_API_KEY` (automated CAPTCHA solving) is the one upstream variable deliberately
+not wired up here. Instead, CAPTCHA-blocked jobs land in the WebUI's **manual review
+queue** for you to finish by hand in the live browser.
+
+## CAPTCHAs and the manual queue
+
+There's no way to freeze a CAPTCHA challenge and solve it later — the tokens are
+short-lived and tied to a live page. So the workflow is batch-by-sitting, not
+save-for-later:
+
+1. Run auto-apply as usual. Jobs it can complete get submitted; CAPTCHA/login-blocked
+   ones are marked and set aside (their resume + cover letter are already generated).
+2. When you have a batch, open the **Live browser** tab and click **Open all in live
+   browser** in the manual queue. Each job opens as a tab in a persistent Chrome.
+3. Solve the CAPTCHA / finish the form yourself, submit, and click **✓ Applied**. Log
+   into a job board once and every later tab on that board is already signed in.
 
 Escape hatch: ApplyPilot also loads `/config/.env` inside the container via dotenv
 (without overriding compose-provided values), so if a future ApplyPilot version adds

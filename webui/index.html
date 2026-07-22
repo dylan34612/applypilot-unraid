@@ -69,6 +69,16 @@
   .badge { font-size: 11px; padding: 2px 8px; border-radius: 99px; border: 1px solid var(--border); color: var(--dim); }
   .badge.ok { color: var(--green); border-color: var(--green); }
   .badge.missing { color: var(--amber); border-color: var(--amber); }
+  .qitem {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px;
+    background: var(--panel2); border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 7px;
+  }
+  .qitem .meta { flex: 1; min-width: 0; }
+  .qitem .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .qitem .s { font-size: 12px; color: var(--dim); }
+  .qitem .reason { font-size: 11px; }
+  .qempty { color: var(--dim); font-size: 13px; padding: 6px 0; }
   #toast {
     position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
     background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
@@ -83,10 +93,24 @@
     <h1>🛩️ ApplyPilot</h1>
     <span id="statusPill" class="pill">idle</span>
     <span class="spacer"></span>
+    <a class="btnlink" id="novncLink" href="#" target="_blank">🖥️ Live browser ↗</a>
     <a class="btnlink" href="/dashboard" target="_blank">Results dashboard ↗</a>
   </header>
 
   <div class="grid" id="stats"></div>
+
+  <div class="panel" id="dockerPanel" style="display:none">
+    <h2>Image &amp; updates <span id="dockerBadge" class="badge"></span></h2>
+    <div class="row">
+      <label>tag
+        <select id="tagSelect" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px"></select>
+      </label>
+      <span class="spacer"></span>
+      <button class="warn" id="btnUpdate">⬇ Update / restart stack</button>
+    </div>
+    <p class="note" id="dockerNote">Pulls the selected image tag and recreates the stack.
+      The WebUI briefly disconnects while it restarts.</p>
+  </div>
 
   <div class="panel">
     <h2>Pipeline</h2>
@@ -101,10 +125,25 @@
     <div class="row">
       <button class="warn" id="btnDry">🧪 Auto-apply (dry-run)</button>
       <button class="danger" id="btnApply">🚀 Auto-apply (LIVE — submits real applications)</button>
+      <span class="spacer"></span>
+      <label title="Run headed so you can watch it in the Live browser tab"><input type="checkbox" id="watch"> watch live</label>
     </div>
     <p class="note">Discovery scrapes job boards, then AI scores/tailors/writes cover letters
-      using your configured endpoint. Auto-apply drives headless Chrome via Claude Code —
-      always dry-run first to see how your model handles forms.</p>
+      using your configured endpoint. Auto-apply drives Chrome via Claude Code —
+      always dry-run first to see how your model handles forms. Tick <b>watch live</b>
+      to run it headed and follow along in the Live browser tab.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Manual review queue <span id="queueCount" class="badge"></span></h2>
+    <p class="note">Jobs the agent couldn't finish on its own — CAPTCHA, forced login, or
+      manual-only application sites. Their tailored resume and cover letter are already
+      generated. Open them in the Live browser tab, finish them by hand, then mark applied.</p>
+    <div class="row" style="margin:10px 0">
+      <button id="btnOpenAll">🖥️ Open all in live browser</button>
+      <button id="btnRefreshQueue">↻ Refresh</button>
+    </div>
+    <div id="queue"></div>
   </div>
 
   <div class="panel">
@@ -179,8 +218,132 @@ async function pollState() {
     for (const [name, ok] of Object.entries(s.files))
       badges.push(`<span class="badge ${ok ? "ok" : "missing"}">${name}${ok ? " ✓" : " ✗"}</span>`);
     $("setupBadges").innerHTML = badges.join(" ");
+
+    if (s.novnc_port) {
+      $("novncLink").href =
+        `${location.protocol}//${location.hostname}:${s.novnc_port}/vnc.html?autoconnect=1&resize=scale`;
+    }
   } catch (e) { /* transient */ }
 }
+
+// ---- manual review queue ----
+const esc = s => (s || "").replace(/[&<>"]/g, c =>
+  ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+let queueUrls = [];
+
+async function loadQueue() {
+  try {
+    const d = await api("/api/manual-queue");
+    queueUrls = d.jobs.map(j => j.application_url || j.url).filter(Boolean);
+    $("queueCount").textContent = d.jobs.length + " job" + (d.jobs.length === 1 ? "" : "s");
+    const q = $("queue");
+    if (!d.jobs.length) { q.innerHTML = `<div class="qempty">Nothing waiting — no CAPTCHA/login-blocked jobs.</div>`; return; }
+    q.innerHTML = "";
+    for (const j of d.jobs) {
+      const url = j.application_url || j.url;
+      const el = document.createElement("div");
+      el.className = "qitem";
+      el.innerHTML =
+        `<div class="meta">
+           <div class="t">${esc(j.title) || "(untitled)"}</div>
+           <div class="s">${esc(j.site) || ""} · score ${j.fit_score ?? "–"} ·
+             <span class="reason badge missing">${esc(j.apply_status)}</span></div>
+         </div>
+         <a class="btnlink" href="${esc(url)}" target="_blank">Open ↗</a>
+         <button data-mark="applied">✓ Applied</button>
+         <button data-mark="failed" class="danger">Skip</button>`;
+      el.querySelector('[data-mark="applied"]').onclick = () => markJob(j.url, "applied");
+      el.querySelector('[data-mark="failed"]').onclick  = () => markJob(j.url, "failed");
+      q.appendChild(el);
+    }
+  } catch (e) { /* transient */ }
+}
+
+async function markJob(url, status) {
+  try {
+    await api("/api/mark", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url, status }),
+    });
+    toast("Marked " + status);
+    loadQueue(); pollState();
+  } catch (e) { toast("Error: " + e.message, 5000); }
+}
+
+$("btnRefreshQueue").onclick = loadQueue;
+$("btnOpenAll").onclick = async () => {
+  if (!queueUrls.length) return toast("Queue is empty");
+  try {
+    const d = await api("/api/manual-browser", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls: queueUrls }),
+    });
+    toast(`Opened ${d.opened} in live browser — switch to the Live browser tab`);
+  } catch (e) { toast("Error: " + e.message, 6000); }
+};
+
+// ---- Docker control (image updates / restart) ----
+let dockerLoaded = false;
+async function loadDocker() {
+  let s;
+  try { s = await api("/api/docker/status"); } catch { return; }
+  if (!s.socket) { $("dockerPanel").style.display = "none"; return; }
+  $("dockerPanel").style.display = "";
+
+  const ready = s.ready && s.stack_ready;
+  $("btnUpdate").disabled = !ready;
+  $("dockerBadge").textContent = ready ? "current: " + s.current_tag : s.reason;
+  $("dockerBadge").className = "badge " + (ready ? "ok" : "missing");
+  if (!ready) $("dockerNote").textContent = s.reason +
+    " — image updates disabled, but everything else works.";
+
+  if (!dockerLoaded) {
+    dockerLoaded = true;
+    let tags = [];
+    try { tags = (await api("/api/docker/tags")).tags || []; } catch {}
+    if (!tags.includes(s.current_tag)) tags.unshift(s.current_tag);
+    const sel = $("tagSelect");
+    sel.innerHTML = "";
+    for (const t of tags) {
+      const o = document.createElement("option");
+      o.value = o.textContent = t;
+      if (t === s.current_tag) o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+}
+
+async function waitForReconnect() {
+  const overlay = $("toast");
+  overlay.textContent = "Stack restarting — reconnecting…";
+  overlay.style.display = "block"; clearTimeout(overlay._h);
+  let tries = 0;
+  const iv = setInterval(async () => {
+    tries++;
+    try {
+      await api("/api/state");
+      clearInterval(iv);
+      overlay.textContent = "Reconnected ✓";
+      setTimeout(() => overlay.style.display = "none", 2000);
+      dockerLoaded = false; loadDocker(); pollState();
+    } catch {
+      if (tries > 40) { clearInterval(iv); overlay.textContent = "Still down — reload the page manually."; }
+    }
+  }, 2000);
+}
+
+$("btnUpdate").onclick = async () => {
+  const tag = $("tagSelect").value;
+  if (!confirm(`Pull "${tag}" and recreate the stack?\n\nThe WebUI will disconnect for ~15-30s while it restarts.`)) return;
+  try {
+    const d = await api("/api/docker/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag }),
+    });
+    toast(d.note || "Updating…");
+    setTimeout(waitForReconnect, 4000);
+  } catch (e) { toast("Update failed: " + e.message, 6000); }
+};
 
 // ---- log polling ----
 async function pollLogs() {
@@ -215,9 +378,10 @@ async function startTask(body, confirmMsg) {
 
 $("btnRun").onclick    = () => startTask({ action: "run" });
 $("btnDoctor").onclick = () => startTask({ action: "doctor" });
-$("btnDry").onclick    = () => startTask({ action: "apply", dry_run: true });
-$("btnApply").onclick  = () => startTask({ action: "apply" },
+$("btnDry").onclick    = () => startTask({ action: "apply", dry_run: true, watch: $("watch").checked });
+$("btnApply").onclick  = () => startTask({ action: "apply", watch: $("watch").checked },
   "LIVE auto-apply will SUBMIT REAL job applications under your name.\n\nContinue?");
+
 $("btnStop").onclick   = async () => {
   try { await api("/api/stop", { method: "POST" }); toast("Stop signal sent"); }
   catch (e) { toast("Error: " + e.message, 5000); }
@@ -273,9 +437,11 @@ $("btnPdf").onclick = async () => {
 
 // ---- boot ----
 loadTab("profile");
-pollState(); pollLogs();
+pollState(); pollLogs(); loadQueue(); loadDocker();
 setInterval(pollState, 3000);
 setInterval(pollLogs, 1500);
+setInterval(loadQueue, 8000);
+setInterval(loadDocker, 15000);
 </script>
 </body>
 </html>

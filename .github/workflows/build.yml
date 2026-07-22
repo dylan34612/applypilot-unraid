@@ -2,7 +2,7 @@ name: Build and push image
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     paths:
       - Dockerfile
       - entrypoint.sh
@@ -31,13 +31,22 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      # Tags: branch name always (e.g. :upstream-prep for testing on the
+      # server); :latest and :sha only from main
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/applypilot-unraid
+          tags: |
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,enable={{is_default_branch}}
+
       - uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: |
-            ghcr.io/${{ github.repository_owner }}/applypilot-unraid:latest
-            ghcr.io/${{ github.repository_owner }}/applypilot-unraid:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
           cache-from: type=gha

@@ -1,6 +1,7 @@
 services:
   applypilot:
-    image: ghcr.io/dylan34612/applypilot-unraid:latest
+    # Set IMAGE_TAG in .env to test a branch build (e.g. upstream-prep)
+    image: ghcr.io/dylan34612/applypilot-unraid:${IMAGE_TAG:-latest}
     container_name: applypilot
     environment:
       # Stages 1-5 (discover/enrich/score/tailor/cover letters) — your
@@ -23,14 +24,35 @@ services:
       # Disable Claude Code telemetry/update checks inside the container
       - DISABLE_AUTOUPDATER=1
       - DISABLE_TELEMETRY=1
+      # --- Docker-control panel (self-update / restart from the WebUI) ---
+      # Image repo the panel pulls tags from and the tag currently requested
+      - IMAGE_REPO=ghcr.io/dylan34612/applypilot-unraid
+      - IMAGE_TAG=${IMAGE_TAG:-latest}
+      # HOST path of the directory holding this compose file + .env. Required
+      # for update/restart to work (see STACK_DIR in .env). Leave blank to
+      # disable the Docker panel's update button.
+      - STACK_DIR=${STACK_DIR:-}
+      # Small image used as a throwaway helper to recreate this container
+      # (a container can't cleanly restart itself)
+      - HELPER_IMAGE=${HELPER_IMAGE:-docker:cli}
     ports:
       # WebUI control panel
       - "${WEBUI_PORT:-8484}:8484"
+      # noVNC — live view of headed Chrome (watch agent, solve CAPTCHAs)
+      - "${NOVNC_PORT:-8485}:8485"
     volumes:
       # ApplyPilot state: profile, resume, db, tailored resumes, logs
       - /mnt/user/appdata/applypilot/config:/config
       # Claude Code config + npm/npx cache survive container recreation
       - /mnt/user/appdata/applypilot/home:/home/pilot
+      # Docker socket — lets the WebUI pull images and restart the stack.
+      # WARNING: socket access = root on the Unraid host. LAN-only, never
+      # expose the WebUI to the internet. Remove these two mounts to disable
+      # the Docker-control panel entirely.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # The stack dir (this compose file + .env), so the panel can edit
+      # IMAGE_TAG and run compose. Must match STACK_DIR in .env.
+      - ${STACK_DIR:-/mnt/user/appdata/applypilot/config}:/stack
     # Chromium needs more shared memory than Docker's 64MB default
     shm_size: "2gb"
     restart: unless-stopped
