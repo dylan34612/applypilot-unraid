@@ -99,6 +99,19 @@
 
   <div class="grid" id="stats"></div>
 
+  <div class="panel" id="dockerPanel" style="display:none">
+    <h2>Image &amp; updates <span id="dockerBadge" class="badge"></span></h2>
+    <div class="row">
+      <label>tag
+        <select id="tagSelect" style="background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:6px 8px"></select>
+      </label>
+      <span class="spacer"></span>
+      <button class="warn" id="btnUpdate">⬇ Update / restart stack</button>
+    </div>
+    <p class="note" id="dockerNote">Pulls the selected image tag and recreates the stack.
+      The WebUI briefly disconnects while it restarts.</p>
+  </div>
+
   <div class="panel">
     <h2>Pipeline</h2>
     <div class="row" style="margin-bottom:10px">
@@ -269,6 +282,69 @@ $("btnOpenAll").onclick = async () => {
   } catch (e) { toast("Error: " + e.message, 6000); }
 };
 
+// ---- Docker control (image updates / restart) ----
+let dockerLoaded = false;
+async function loadDocker() {
+  let s;
+  try { s = await api("/api/docker/status"); } catch { return; }
+  if (!s.socket) { $("dockerPanel").style.display = "none"; return; }
+  $("dockerPanel").style.display = "";
+
+  const ready = s.ready && s.stack_ready;
+  $("btnUpdate").disabled = !ready;
+  $("dockerBadge").textContent = ready ? "current: " + s.current_tag : s.reason;
+  $("dockerBadge").className = "badge " + (ready ? "ok" : "missing");
+  if (!ready) $("dockerNote").textContent = s.reason +
+    " — image updates disabled, but everything else works.";
+
+  if (!dockerLoaded) {
+    dockerLoaded = true;
+    let tags = [];
+    try { tags = (await api("/api/docker/tags")).tags || []; } catch {}
+    if (!tags.includes(s.current_tag)) tags.unshift(s.current_tag);
+    const sel = $("tagSelect");
+    sel.innerHTML = "";
+    for (const t of tags) {
+      const o = document.createElement("option");
+      o.value = o.textContent = t;
+      if (t === s.current_tag) o.selected = true;
+      sel.appendChild(o);
+    }
+  }
+}
+
+async function waitForReconnect() {
+  const overlay = $("toast");
+  overlay.textContent = "Stack restarting — reconnecting…";
+  overlay.style.display = "block"; clearTimeout(overlay._h);
+  let tries = 0;
+  const iv = setInterval(async () => {
+    tries++;
+    try {
+      await api("/api/state");
+      clearInterval(iv);
+      overlay.textContent = "Reconnected ✓";
+      setTimeout(() => overlay.style.display = "none", 2000);
+      dockerLoaded = false; loadDocker(); pollState();
+    } catch {
+      if (tries > 40) { clearInterval(iv); overlay.textContent = "Still down — reload the page manually."; }
+    }
+  }, 2000);
+}
+
+$("btnUpdate").onclick = async () => {
+  const tag = $("tagSelect").value;
+  if (!confirm(`Pull "${tag}" and recreate the stack?\n\nThe WebUI will disconnect for ~15-30s while it restarts.`)) return;
+  try {
+    const d = await api("/api/docker/update", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ tag }),
+    });
+    toast(d.note || "Updating…");
+    setTimeout(waitForReconnect, 4000);
+  } catch (e) { toast("Update failed: " + e.message, 6000); }
+};
+
 // ---- log polling ----
 async function pollLogs() {
   try {
@@ -361,10 +437,11 @@ $("btnPdf").onclick = async () => {
 
 // ---- boot ----
 loadTab("profile");
-pollState(); pollLogs(); loadQueue();
+pollState(); pollLogs(); loadQueue(); loadDocker();
 setInterval(pollState, 3000);
 setInterval(pollLogs, 1500);
 setInterval(loadQueue, 8000);
+setInterval(loadDocker, 15000);
 </script>
 </body>
 </html>

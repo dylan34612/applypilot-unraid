@@ -293,6 +293,129 @@ def manual_browser(req: ManualBrowserRequest) -> JSONResponse:
 
 
 # ---------------------------------------------------------------------------
+# Docker control — pull image updates and restart the stack from the WebUI.
+#
+# Requires the Docker socket mounted and STACK_DIR set to the HOST path of the
+# compose project. A container can't cleanly recreate itself (the process dies
+# mid-operation), so restarts are delegated to a short-lived helper container
+# that survives our recreation.
+# ---------------------------------------------------------------------------
+
+DOCKER = "/usr/bin/docker"
+STACK_DIR_HOST = os.environ.get("STACK_DIR", "")          # host path, for helper -v
+STACK_MOUNT = Path("/stack")                              # same dir, inside us
+IMAGE_REPO = os.environ.get("IMAGE_REPO", "")
+HELPER_IMAGE = os.environ.get("HELPER_IMAGE", "docker:cli")
+
+
+def _docker_ok() -> bool:
+    if not Path("/var/run/docker.sock").exists() or not Path(DOCKER).exists():
+        return False
+    try:
+        return subprocess.run([DOCKER, "version", "--format", "{{.Server.Version}}"],
+                              capture_output=True, timeout=8).returncode == 0
+    except Exception:
+        return False
+
+
+def _set_env_tag(tag: str) -> None:
+    """Write IMAGE_TAG=<tag> into the stack .env so the recreate uses it."""
+    envf = STACK_MOUNT / ".env"
+    lines = envf.read_text(encoding="utf-8").splitlines() if envf.exists() else []
+    out, found = [], False
+    for ln in lines:
+        if ln.strip().startswith("IMAGE_TAG=") or ln.strip().startswith("IMAGE_TAG ="):
+            out.append(f"IMAGE_TAG={tag}"); found = True
+        else:
+            out.append(ln)
+    if not found:
+        out.append(f"IMAGE_TAG={tag}")
+    envf.write_text("\n".join(out) + "\n", encoding="utf-8")
+
+
+@app.get("/api/docker/status")
+def docker_status() -> JSONResponse:
+    ok = _docker_ok()
+    stack_ready = bool(STACK_DIR_HOST) and (STACK_MOUNT / "docker-compose.yml").exists()
+    return JSONResponse({
+        "socket": Path("/var/run/docker.sock").exists(),
+        "cli": Path(DOCKER).exists(),
+        "ready": ok,
+        "stack_ready": stack_ready,
+        "repo": IMAGE_REPO,
+        "current_tag": os.environ.get("IMAGE_TAG", "latest"),
+        "reason": "" if (ok and stack_ready) else (
+            "Docker socket not reachable" if not ok else
+            "STACK_DIR not set / compose file not mounted at /stack"),
+    })
+
+
+@app.get("/api/docker/tags")
+def docker_tags() -> JSONResponse:
+    """Best-effort list of available tags from GHCR (public package)."""
+    if not IMAGE_REPO or "ghcr.io/" not in IMAGE_REPO:
+        return JSONResponse({"tags": []})
+    name = IMAGE_REPO.split("ghcr.io/", 1)[1]
+    try:
+        import httpx
+        tok = httpx.get(f"https://ghcr.io/token?scope=repository:{name}:pull",
+                        timeout=10).json().get("token", "")
+        r = httpx.get(f"https://ghcr.io/v2/{name}/tags/list",
+                      headers={"Authorization": f"Bearer {tok}"}, timeout=10)
+        tags = r.json().get("tags", []) if r.status_code == 200 else []
+        # Hide immutable per-commit build tags (sha-xxxx and bare hex SHAs)
+        def _is_sha(t: str) -> bool:
+            return t.startswith("sha-") or (
+                len(t) >= 12 and all(c in "0123456789abcdef" for c in t))
+        tags = [t for t in tags if not _is_sha(t)]
+        return JSONResponse({"tags": sorted(tags)})
+    except Exception as exc:
+        return JSONResponse({"tags": [], "error": str(exc)})
+
+
+class UpdateRequest(BaseModel):
+    tag: str | None = None
+
+
+@app.post("/api/docker/update")
+def docker_update(req: UpdateRequest) -> JSONResponse:
+    """Switch tag (optional) and recreate the stack via a detached helper
+    container that outlives this one's recreation."""
+    if not _docker_ok():
+        raise HTTPException(400, "Docker socket not available")
+    if not STACK_DIR_HOST or not (STACK_MOUNT / "docker-compose.yml").exists():
+        raise HTTPException(400, "STACK_DIR not set or compose file not mounted at /stack")
+
+    if req.tag:
+        if not all(c.isalnum() or c in "._-" for c in req.tag) or len(req.tag) > 128:
+            raise HTTPException(422, "Invalid tag")
+        _set_env_tag(req.tag)
+
+    # Helper mounts the HOST stack path (bind mounts are host-relative) and the
+    # socket, waits for our HTTP response to flush, then pulls + recreates.
+    helper = [
+        DOCKER, "run", "--rm", "-d",
+        "-v", "/var/run/docker.sock:/var/run/docker.sock",
+        "-v", f"{STACK_DIR_HOST}:/stack",
+        "-w", "/stack",
+        HELPER_IMAGE, "sh", "-c",
+        "sleep 3; docker compose pull && docker compose up -d",
+    ]
+    try:
+        cid = subprocess.run(helper, capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "Timed out launching update helper")
+    if cid.returncode != 0:
+        raise HTTPException(500, f"Helper failed to start: {cid.stderr.strip()[:300]}")
+    return JSONResponse({
+        "updating": True,
+        "tag": req.tag or os.environ.get("IMAGE_TAG", "latest"),
+        "helper": cid.stdout.strip()[:12],
+        "note": "Stack is recreating — this WebUI will disconnect and come back in ~15-30s.",
+    })
+
+
+# ---------------------------------------------------------------------------
 # Config file editing (replaces the interactive init wizard)
 # ---------------------------------------------------------------------------
 

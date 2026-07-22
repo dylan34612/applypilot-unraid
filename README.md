@@ -40,7 +40,10 @@ before going live.
 
 3. **Set the env** — in the stack's env file editor, paste the contents of
    [.env.example](.env.example) and fill in your endpoint URL, API key, and model name
-   (the `BRIDGE_*` values are usually the same endpoint as `LLM_*`).
+   (the `BRIDGE_*` values are usually the same endpoint as `LLM_*`). Set `STACK_DIR` to
+   the host path of the folder holding your compose file + `.env` if you want the
+   in-WebUI update button (for the Compose Manager plugin that's
+   `/boot/config/plugins/compose.manager/projects/<name>`).
 
 4. **Compose Up.** The image is pulled from GHCR — nothing is built on the server.
 
@@ -81,9 +84,16 @@ out to the `applypilot` CLI, so behavior is identical to running commands by han
   already generated. **Open all in live browser** loads them as tabs in a persistent
   Chrome (log into a board once and the rest of the batch stays logged in); finish each
   by hand, then mark it Applied.
+- **Image & updates** — pick an image tag and recreate the stack without touching a
+  terminal or the Compose Manager. Requires the Docker socket mount and `STACK_DIR`
+  (both in the default compose); the panel hides itself if the socket isn't present.
+  See the security note below.
 
 **No authentication** — keep it LAN-only. It can submit job applications under your
-name; don't reverse-proxy it to the internet without adding auth.
+name, and (with the Docker socket mounted for the update panel) it has root-equivalent
+control of the Unraid host. Do not reverse-proxy it to the internet without adding auth.
+To drop the update panel and its attack surface, remove the two Docker-related volume
+mounts from the compose file; everything else keeps working.
 
 The CLI still works too (`docker exec -it applypilot applypilot ...`), and setting the
 stack's command to `idle` disables the WebUI entirely.

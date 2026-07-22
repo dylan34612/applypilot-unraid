@@ -12,6 +12,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         xvfb x11vnc fluxbox novnc websockify \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
+    # gosu: entrypoint starts as root to grant the pilot user access to the
+    # Docker socket, then drops to pilot for all real work
+    && apt-get install -y --no-install-recommends gosu \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Docker CLI only (no engine) — the WebUI shells out to it to launch a helper
+# container for pull/restart. Compose itself lives in the helper image.
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends docker-ce-cli \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @anthropic-ai/claude-code @playwright/mcp
@@ -56,9 +70,14 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 
 ENV DISPLAY=:99 \
     VNC_RESOLUTION=1280x900x24 \
-    NOVNC_PORT=8485
+    NOVNC_PORT=8485 \
+    PUID=99 \
+    PGID=100
 
-USER pilot
+# NOTE: no `USER pilot` here. The entrypoint starts as root so it can add the
+# pilot user to the Docker socket's group, then drops to pilot with gosu for
+# every real process (uvicorn, Chrome, Claude Code) — so nothing agent-facing
+# runs as root, satisfying Claude Code's bypassPermissions rule.
 WORKDIR /home/pilot
 VOLUME /config
 EXPOSE 8484 8485
