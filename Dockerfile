@@ -37,6 +37,14 @@ RUN npm install -g @anthropic-ai/claude-code @playwright/mcp
 ARG APPLYPILOT_REPO=https://github.com/Pickle-Pixel/ApplyPilot
 ARG APPLYPILOT_REF=main
 RUN git clone --depth 1 --branch "${APPLYPILOT_REF}" "${APPLYPILOT_REPO}" /tmp/applypilot-src \
+    # Upstream hardcodes the LLM HTTP timeout at 120s (llm.py: `_TIMEOUT = 120`),
+    # which a slow endpoint blows through on long tailor/cover requests. Make it
+    # env-tunable (LLM_TIMEOUT, still defaulting to 120) and fail the build if the
+    # upstream line ever moves, so we never ship thinking it's configurable when it
+    # isn't. `import os` is already present in that module.
+    && sed -i 's/^_TIMEOUT = 120  # seconds$/_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))  # seconds/' \
+        /tmp/applypilot-src/src/applypilot/llm.py \
+    && grep -q 'os.environ.get("LLM_TIMEOUT"' /tmp/applypilot-src/src/applypilot/llm.py \
     && pip install --no-cache-dir /tmp/applypilot-src \
     && pip install --no-cache-dir --no-deps python-jobspy \
     && pip install --no-cache-dir pydantic tls-client requests markdownify regex \
