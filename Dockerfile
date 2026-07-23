@@ -46,6 +46,17 @@ RUN git clone --depth 1 --branch "${APPLYPILOT_REF}" "${APPLYPILOT_REPO}" /tmp/a
     && cp /tmp/applypilot-src/src/applypilot/config/searches.example.yaml /opt/webui/ \
     && rm -rf /tmp/applypilot-src
 
+# ApplyPilot's discover (smart-extract), enrich, and pdf stages drive Playwright's
+# *Python* browser directly — a separate download from the apt `chromium` above and
+# from the npm `@playwright/mcp`. Without it those stages die with
+# "Executable doesn't exist at .../ms-playwright/chromium_headless_shell-...".
+# Install into a shared, world-readable path (decoupled from any one user's $HOME)
+# and point every process at it via PLAYWRIGHT_BROWSERS_PATH. System Chromium above
+# already pulled the shared libs it needs, so no --with-deps is required.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install chromium \
+    && chmod -R a+rX /ms-playwright
+
 # WebUI (control panel served on port 8484)
 RUN pip install --no-cache-dir fastapi uvicorn python-multipart
 COPY webui /opt/webui
