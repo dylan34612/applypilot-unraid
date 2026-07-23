@@ -9,6 +9,10 @@ services:
       - LLM_URL=${LLM_URL}
       - LLM_API_KEY=${LLM_API_KEY}
       - LLM_MODEL=${LLM_MODEL}
+      # Per-request HTTP timeout (seconds) for stages 1-5. Upstream default is
+      # 120; raised here so slow endpoints don't time out on long tailor/cover
+      # requests. Bump further in .env if you still see read timeouts.
+      - LLM_TIMEOUT=${LLM_TIMEOUT:-600}
       # Alternative stage 1-5 providers (optional; LLM_URL takes precedence
       # over both when set)
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}

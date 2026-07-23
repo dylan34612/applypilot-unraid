@@ -52,6 +52,12 @@
     width: 64px; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
   }
+  .row input[type=text], .row select {
+    background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px;
+  }
+  .stagebtns { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+  .stagebtns .sep { font-size: 12px; color: var(--dim); margin: 0 2px; }
   .tabs { display: flex; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
   .tabs button.active { border-color: var(--accent); color: var(--accent); }
   textarea {
@@ -115,23 +121,61 @@
   <div class="panel">
     <h2>Pipeline</h2>
     <div class="row" style="margin-bottom:10px">
-      <button class="primary" id="btnRun">▶ Run pipeline (all stages)</button>
-      <button id="btnDoctor">🩺 Doctor</button>
-      <label>workers <input type="number" id="workers" value="1" min="1" max="8"></label>
-      <label>min score <input type="number" id="minScore" value="7" min="1" max="10"></label>
+      <div class="stagebtns">
+        <button class="primary" id="btnRun">▶ Run all</button>
+        <span class="sep">or one stage:</span>
+        <button data-stage="discover">Discover</button>
+        <button data-stage="enrich">Enrich</button>
+        <button data-stage="score">Score</button>
+        <button data-stage="tailor">Tailor</button>
+        <button data-stage="cover">Cover</button>
+        <button data-stage="pdf">PDF</button>
+      </div>
       <span class="spacer"></span>
       <button class="danger" id="btnStop" disabled>■ Stop</button>
     </div>
     <div class="row">
-      <button class="warn" id="btnDry">🧪 Auto-apply (dry-run)</button>
-      <button class="danger" id="btnApply">🚀 Auto-apply (LIVE — submits real applications)</button>
+      <label>workers <input type="number" id="workers" value="1" min="1" max="8"></label>
+      <label>min score <input type="number" id="minScore" value="7" min="1" max="10"></label>
+      <label>validation
+        <select id="validation">
+          <option value="normal">normal</option>
+          <option value="strict">strict</option>
+          <option value="lenient">lenient</option>
+        </select>
+      </label>
+      <label title="Run stages concurrently"><input type="checkbox" id="stream"> stream</label>
+      <label title="Preview stages without writing results"><input type="checkbox" id="runDry"> dry-run</label>
+      <span class="spacer"></span>
+      <button id="btnStatus">📊 Status</button>
+      <button id="btnDoctor">🩺 Doctor</button>
+    </div>
+    <p class="note">Run the whole pipeline, or re-run a single stage to retry just what
+      failed — each stage only touches rows that still need it (<b>enrich</b> = pending-detail
+      jobs, <b>pdf</b> = resumes/letters without a PDF, <b>tailor</b>/<b>cover</b> =
+      eligible jobs at/above min score). Discovery scrapes boards; score/tailor/cover use
+      your LLM endpoint.</p>
+  </div>
+
+  <div class="panel">
+    <h2>Auto-apply</h2>
+    <div class="row" style="margin-bottom:10px">
+      <button class="warn" id="btnDry">🧪 Dry-run</button>
+      <button class="danger" id="btnApply">🚀 LIVE — submits real applications</button>
+      <button id="btnResetFailed" title="Re-queue jobs that previously errored, then dry-run">↺ Reset failed</button>
       <span class="spacer"></span>
       <label title="Run headed so you can watch it in the Live browser tab"><input type="checkbox" id="watch"> watch live</label>
     </div>
-    <p class="note">Discovery scrapes job boards, then AI scores/tailors/writes cover letters
-      using your configured endpoint. Auto-apply drives Chrome via Claude Code —
-      always dry-run first to see how your model handles forms. Tick <b>watch live</b>
-      to run it headed and follow along in the Live browser tab.</p>
+    <div class="row">
+      <label>limit <input type="number" id="limit" min="1" max="999" placeholder="all" style="width:70px"></label>
+      <label>model <input type="text" id="model" value="haiku" style="width:130px"></label>
+      <label title="Keep running, polling for newly-scored jobs"><input type="checkbox" id="continuous"> continuous</label>
+    </div>
+    <p class="note">Drives Chrome via Claude Code — always <b>dry-run</b> first to see how your
+      model handles forms. <b>Reset failed</b> re-queues previously-errored jobs (as a safe
+      dry-run). <b>limit</b> caps submissions; <b>model</b> picks the Claude model; tick
+      <b>watch live</b> to follow along in the Live browser tab. Uses <b>workers</b> /
+      <b>min score</b> from the Pipeline panel.</p>
   </div>
 
   <div class="panel">
@@ -199,8 +243,9 @@ async function pollState() {
     pill.textContent = s.running ? "running: " + s.task : "idle";
     pill.classList.toggle("running", s.running);
     $("btnStop").disabled = !s.running;
-    for (const b of ["btnRun", "btnDry", "btnApply", "btnDoctor"])
+    for (const b of ["btnRun", "btnDry", "btnApply", "btnDoctor", "btnStatus", "btnResetFailed"])
       $(b).disabled = s.running;
+    document.querySelectorAll("[data-stage]").forEach(b => b.disabled = s.running);
 
     const st = $("stats"); st.innerHTML = "";
     const entries = Object.entries(s.stats || {}).filter(([k, v]) => typeof v === "number");
@@ -359,28 +404,52 @@ async function pollLogs() {
 }
 
 // ---- tasks ----
+const wm = () => ({ workers: +$("workers").value || 1, min_score: +$("minScore").value || 7 });
+
+function runBody(stages) {
+  return {
+    action: "run", stages, ...wm(),
+    stream: $("stream").checked,
+    dry_run: $("runDry").checked,
+    validation: $("validation").value,
+  };
+}
+
+function applyBody(extra) {
+  const lim = parseInt($("limit").value, 10);
+  return {
+    action: "apply", ...wm(),
+    watch: $("watch").checked,
+    limit: Number.isFinite(lim) && lim > 0 ? lim : null,
+    model: $("model").value.trim() || null,
+    continuous: $("continuous").checked,
+    ...extra,
+  };
+}
+
 async function startTask(body, confirmMsg) {
   if (confirmMsg && !confirm(confirmMsg)) return;
   try {
     const d = await api("/api/task", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        workers: +$("workers").value || 1,
-        min_score: +$("minScore").value || 7,
-        ...body,
-      }),
+      body: JSON.stringify(body),
     });
     toast("Started: " + d.started);
     pollState();
   } catch (e) { toast("Error: " + e.message, 5000); }
 }
 
-$("btnRun").onclick    = () => startTask({ action: "run" });
+$("btnRun").onclick    = () => startTask(runBody(["all"]));
+document.querySelectorAll("[data-stage]").forEach(b =>
+  b.onclick = () => startTask(runBody([b.dataset.stage])));
 $("btnDoctor").onclick = () => startTask({ action: "doctor" });
-$("btnDry").onclick    = () => startTask({ action: "apply", dry_run: true, watch: $("watch").checked });
-$("btnApply").onclick  = () => startTask({ action: "apply", watch: $("watch").checked },
+$("btnStatus").onclick = () => startTask({ action: "status" });
+$("btnDry").onclick    = () => startTask(applyBody({ dry_run: true }));
+$("btnApply").onclick  = () => startTask(applyBody({}),
   "LIVE auto-apply will SUBMIT REAL job applications under your name.\n\nContinue?");
+$("btnResetFailed").onclick = () => startTask(applyBody({ dry_run: true, reset_failed: true }),
+  "Reset all previously-failed jobs so they're retried?\n\n(Runs as a safe dry-run — no submissions.)");
 
 $("btnStop").onclick   = async () => {
   try { await api("/api/stop", { method: "POST" }); toast("Stop signal sent"); }

@@ -37,6 +37,14 @@ RUN npm install -g @anthropic-ai/claude-code @playwright/mcp
 ARG APPLYPILOT_REPO=https://github.com/Pickle-Pixel/ApplyPilot
 ARG APPLYPILOT_REF=main
 RUN git clone --depth 1 --branch "${APPLYPILOT_REF}" "${APPLYPILOT_REPO}" /tmp/applypilot-src \
+    # Upstream hardcodes the LLM HTTP timeout at 120s (llm.py: `_TIMEOUT = 120`),
+    # which a slow endpoint blows through on long tailor/cover requests. Make it
+    # env-tunable (LLM_TIMEOUT, still defaulting to 120) and fail the build if the
+    # upstream line ever moves, so we never ship thinking it's configurable when it
+    # isn't. `import os` is already present in that module.
+    && sed -i 's/^_TIMEOUT = 120  # seconds$/_TIMEOUT = int(os.environ.get("LLM_TIMEOUT", "120"))  # seconds/' \
+        /tmp/applypilot-src/src/applypilot/llm.py \
+    && grep -q 'os.environ.get("LLM_TIMEOUT"' /tmp/applypilot-src/src/applypilot/llm.py \
     && pip install --no-cache-dir /tmp/applypilot-src \
     && pip install --no-cache-dir --no-deps python-jobspy \
     && pip install --no-cache-dir pydantic tls-client requests markdownify regex \
@@ -45,6 +53,17 @@ RUN git clone --depth 1 --branch "${APPLYPILOT_REF}" "${APPLYPILOT_REPO}" /tmp/a
     && cp /tmp/applypilot-src/profile.example.json /opt/webui/ \
     && cp /tmp/applypilot-src/src/applypilot/config/searches.example.yaml /opt/webui/ \
     && rm -rf /tmp/applypilot-src
+
+# ApplyPilot's discover (smart-extract), enrich, and pdf stages drive Playwright's
+# *Python* browser directly — a separate download from the apt `chromium` above and
+# from the npm `@playwright/mcp`. Without it those stages die with
+# "Executable doesn't exist at .../ms-playwright/chromium_headless_shell-...".
+# Install into a shared, world-readable path (decoupled from any one user's $HOME)
+# and point every process at it via PLAYWRIGHT_BROWSERS_PATH. System Chromium above
+# already pulled the shared libs it needs, so no --with-deps is required.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN python -m playwright install chromium \
+    && chmod -R a+rX /ms-playwright
 
 # WebUI (control panel served on port 8484)
 RUN pip install --no-cache-dir fastapi uvicorn python-multipart

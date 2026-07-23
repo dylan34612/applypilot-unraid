@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import signal
 import subprocess
 import threading
@@ -163,6 +164,9 @@ def logs(since: int = 0) -> JSONResponse:
 # ---------------------------------------------------------------------------
 
 VALID_STAGES = {"all", "discover", "enrich", "score", "tailor", "cover", "pdf"}
+VALID_VALIDATION = {"strict", "normal", "lenient"}
+# Model names are passed straight to the CLI, so keep them to a safe charset
+MODEL_RE = re.compile(r"[A-Za-z0-9._:\-/]{1,64}")
 
 
 class TaskRequest(BaseModel):
@@ -172,6 +176,18 @@ class TaskRequest(BaseModel):
     min_score: int | None = None
     dry_run: bool = False
     watch: bool = False  # run headed on the virtual display (viewable via noVNC)
+    # run-only
+    stream: bool = False
+    validation: str = "normal"
+    # apply-only
+    limit: int | None = None
+    model: str | None = None
+    continuous: bool = False
+    reset_failed: bool = False
+
+
+def _clamp_score(v: int) -> str:
+    return str(max(1, min(v, 10)))
 
 
 @app.post("/api/task")
@@ -184,8 +200,14 @@ def start_task(req: TaskRequest) -> JSONResponse:
         if workers > 1:
             args += ["--workers", str(workers)]
         if req.min_score is not None:
-            args += ["--min-score", str(max(1, min(req.min_score, 10)))]
-        task = f"run {' '.join(stages)}"
+            args += ["--min-score", _clamp_score(req.min_score)]
+        if req.stream:
+            args.append("--stream")
+        if req.dry_run:
+            args.append("--dry-run")
+        if req.validation in VALID_VALIDATION and req.validation != "normal":
+            args += ["--validation", req.validation]
+        task = f"run {' '.join(stages)}" + (" (dry-run)" if req.dry_run else "")
 
     elif req.action == "apply":
         args = ["applypilot", "apply"]
@@ -194,15 +216,29 @@ def start_task(req: TaskRequest) -> JSONResponse:
             args.append("--headless")
         if req.dry_run:
             args.append("--dry-run")
+        if req.reset_failed:
+            args.append("--reset-failed")
+        if req.continuous:
+            args.append("--continuous")
         if workers > 1:
             args += ["--workers", str(workers)]
         if req.min_score is not None:
-            args += ["--min-score", str(max(1, min(req.min_score, 10)))]
-        task = "apply" + (" watch" if req.watch else "") + (" (dry-run)" if req.dry_run else "")
+            args += ["--min-score", _clamp_score(req.min_score)]
+        if req.limit is not None and req.limit > 0:
+            args += ["--limit", str(min(req.limit, 999))]
+        if req.model and MODEL_RE.fullmatch(req.model):
+            args += ["--model", req.model]
+        task = "apply" + (" watch" if req.watch else "") \
+            + (" reset-failed" if req.reset_failed else "") \
+            + (" (dry-run)" if req.dry_run else "")
 
     elif req.action == "doctor":
         args = ["applypilot", "doctor"]
         task = "doctor"
+
+    elif req.action == "status":
+        args = ["applypilot", "status"]
+        task = "status"
 
     else:
         raise HTTPException(400, f"Unknown action: {req.action}")
